@@ -1,0 +1,27 @@
+{
+  "name": "aspecta",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@catppuccin/palette": "^1.8.0",
+    "@remixicon/vue": "^4.9.0",
+    "jszip": "^3.10.1",
+    "vue": "^3.5.40",
+    "wasm-vips": "^0.0.18"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@vue/tsconfig": "^0.9.1",
+    "lightningcss": "^1.33.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0",
+    "vue-tsc": "^3.3.8"
+  }
+}
