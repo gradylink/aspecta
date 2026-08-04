@@ -187,6 +187,17 @@ const clearQueue = () => {
   etaSeconds.value = null;
 };
 
+const startNewBatch = () => {
+  queue.value.forEach((i) => URL.revokeObjectURL(i.previewUrl));
+  queue.value = [];
+  if (downloadUrl.value) URL.revokeObjectURL(downloadUrl.value);
+  downloadUrl.value = null;
+  totalProgress.value = 0;
+  etaSeconds.value = null;
+  finalFrameResults.value = [];
+  framingTasks.value = [];
+};
+
 const startProcessing = async () => {
   isProcessing.value = true;
   totalProgress.value = 0;
@@ -454,15 +465,21 @@ const handleFramingCancel = () => {
         </p>
       </div>
 
-      <a
-        v-if="downloadUrl"
-        :href="downloadUrl"
-        download="processed_images.zip"
-        class="btn download"
-      >
-        <RiFolderDownloadLine size="20px" />
-        <span>Download ZIP Archive</span>
-      </a>
+      <template v-if="downloadUrl">
+        <a
+          :href="downloadUrl"
+          download="processed_images.zip"
+          class="btn download"
+        >
+          <RiFolderDownloadLine size="20px" />
+          <span>Download ZIP Archive</span>
+        </a>
+
+        <button class="btn-secondary process-more" @click="startNewBatch">
+          <RiRefreshLine size="16px" />
+          <span>Process More Images</span>
+        </button>
+      </template>
     </div>
 
     <FramingDialog
