@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { RiArrowRightLine, RiSkipForwardLine } from "@remixicon/vue";
+import {
+  RiArrowRightLine,
+  RiSkipForwardLine,
+  RiSkipForwardMiniLine,
+} from "@remixicon/vue";
 
 export interface FrameTask {
   id: string;
@@ -43,6 +47,12 @@ const slideAxis = ref<"x" | "y" | "none">("none");
 const imageRef = ref<HTMLImageElement | null>(null);
 
 const currentTask = computed(() => props.tasks[currentIndex.value] || null);
+
+const hasMoreRatiosForImage = computed(() => {
+  const next = props.tasks[currentIndex.value + 1];
+  return !!currentTask.value && !!next &&
+    next.fileName === currentTask.value.fileName;
+});
 
 const clamp = (val: number, min: number, max: number) =>
   Math.min(Math.max(val, min), max);
@@ -109,6 +119,29 @@ const saveCurrentAndNext = () => {
 
   if (currentIndex.value < props.tasks.length - 1) {
     currentIndex.value++;
+    panX.value = 50;
+    panY.value = 50;
+  } else {
+    emit("complete", results.value);
+    reset();
+  }
+};
+
+const skipRemainingInImage = () => {
+  if (!currentTask.value) return;
+  const fileName = currentTask.value.fileName;
+
+  let idx = currentIndex.value;
+  const skipped: FrameResult[] = [];
+  while (idx < props.tasks.length && props.tasks[idx].fileName === fileName) {
+    skipped.push({ taskId: props.tasks[idx].id, panX: 50, panY: 50 });
+    idx++;
+  }
+
+  results.value.push(...skipped);
+
+  if (idx < props.tasks.length) {
+    currentIndex.value = idx;
     panX.value = 50;
     panY.value = 50;
   } else {
@@ -186,11 +219,19 @@ watch(() => props.isOpen, (newVal) => {
         <button class="btn-text" @click="handleCancel">Cancel</button>
         <div class="action-group">
           <button
+            v-if="hasMoreRatiosForImage"
+            class="btn-secondary"
+            @click="skipRemainingInImage"
+          >
+            <RiSkipForwardLine size="18px" />
+            <span>Skip Remaining In Image</span>
+          </button>
+          <button
             v-if="tasks.length > 1 && currentIndex < tasks.length - 1"
             class="btn-secondary"
             @click="skipRemaining"
           >
-            <RiSkipForwardLine size="18px" />
+            <RiSkipForwardMiniLine size="18px" />
             <span>Skip Remaining</span>
           </button>
           <button class="btn primary" @click="saveCurrentAndNext">
