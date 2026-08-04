@@ -2,6 +2,7 @@ import Vips from "wasm-vips";
 import JSZip from "jszip";
 
 interface AspectRatioSpec {
+  id: string;
   label: string;
   wRatio: number;
   hRatio: number;
@@ -13,9 +14,16 @@ interface FormatSpec {
   folder: string;
 }
 
+interface FrameResult {
+  taskId: string;
+  panX: number;
+  panY: number;
+}
+
 interface ProcessOptions {
   ratios: AspectRatioSpec[];
   formats: FormatSpec[];
+  frames: FrameResult[];
 }
 
 let vipsInstance: typeof Vips | null = null;
@@ -29,12 +37,12 @@ const getVips = async (): Promise<typeof Vips> => {
 
 self.onmessage = async (
   e: MessageEvent<{
-    files: { name: string; buffer: ArrayBuffer }[];
+    files: { id: string; name: string; buffer: ArrayBuffer }[];
     options: ProcessOptions;
   }>,
 ) => {
   const { files, options } = e.data;
-  const { ratios, formats } = options;
+  const { ratios, formats, frames } = options;
 
   if (!ratios.length || !formats.length) {
     self.postMessage({
@@ -79,8 +87,14 @@ self.onmessage = async (
           cropH = Math.round(imgWidth / targetAspect);
         }
 
-        const left = Math.round((imgWidth - cropW) / 2);
-        const top = Math.round((imgHeight - cropH) / 2);
+        const frame = frames.find((f) =>
+          f.taskId === `${fileItem.id}-${ratio.id}`
+        );
+        const panX = frame?.panX ?? 50;
+        const panY = frame?.panY ?? 50;
+
+        const left = Math.round(((imgWidth - cropW) * panX) / 100);
+        const top = Math.round(((imgHeight - cropH) * panY) / 100);
 
         const cropped = image.crop(left, top, cropW, cropH);
         const fileNamePrefix = files.length > 1

@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import FramingDialog, {
+  type FrameResult,
+  type FrameTask,
+} from "./components/FramingDialog.vue";
+import { computed, ref, toRaw } from "vue";
 import {
   RiAddLine,
   RiCheckDoubleLine,
@@ -65,6 +69,12 @@ const downloadUrl = ref<string | null>(null);
 
 const startTime = ref<number | null>(null);
 const etaSeconds = ref<number | null>(null);
+
+const isFraming = ref(false);
+const framingTasks = ref<FrameTask[]>([]);
+const finalFrameResults = ref<FrameResult[]>([]);
+
+const fileInputRef = ref<HTMLInputElement | null>(null);
 
 const hasFiles = computed(() => queue.value.length > 0);
 
@@ -178,15 +188,6 @@ const clearQueue = () => {
 };
 
 const startProcessing = async () => {
-  if (
-    queue.value.length === 0 ||
-    isProcessing.value ||
-    !selectedRatios.value.length ||
-    !selectedFormats.value.length
-  ) {
-    return;
-  }
-
   isProcessing.value = true;
   totalProgress.value = 0;
   startTime.value = Date.now();
@@ -194,13 +195,15 @@ const startProcessing = async () => {
 
   const filePayloads = await Promise.all(
     queue.value.map(async (item) => ({
+      id: item.id,
       name: item.file.name,
       buffer: await item.file.arrayBuffer(),
     })),
   );
 
   const options = {
-    ratios: selectedRatios.value.map(({ label, wRatio, hRatio }) => ({
+    ratios: selectedRatios.value.map(({ id, label, wRatio, hRatio }) => ({
+      id,
       label,
       wRatio,
       hRatio,
@@ -210,8 +213,8 @@ const startProcessing = async () => {
       extension,
       folder,
     })),
+    frames: JSON.parse(JSON.stringify(toRaw(finalFrameResults.value))),
   };
-
   const worker = new Worker(
     new URL("./workers/processor.worker.ts", import.meta.url),
     { type: "module" },
@@ -251,6 +254,45 @@ const startProcessing = async () => {
   const transferables = filePayloads.map((f) => f.buffer);
   worker.postMessage({ files: filePayloads, options }, transferables);
 };
+
+const prepareFraming = () => {
+  if (
+    queue.value.length === 0 ||
+    !selectedRatios.value.length ||
+    !selectedFormats.value.length
+  ) {
+    return;
+  }
+
+  const tasks: FrameTask[] = [];
+
+  queue.value.forEach((item) => {
+    selectedRatios.value.forEach((ratio) => {
+      tasks.push({
+        id: `${item.id}-${ratio.id}`,
+        previewUrl: item.previewUrl,
+        fileName: item.file.name,
+        ratioLabel: ratio.label,
+        wRatio: ratio.wRatio,
+        hRatio: ratio.hRatio,
+      });
+    });
+  });
+
+  framingTasks.value = tasks;
+  isFraming.value = true;
+};
+
+const handleFramingComplete = (results: FrameResult[]) => {
+  finalFrameResults.value = results;
+  isFraming.value = false;
+  startProcessing(); // Triggers the worker after framing is done
+};
+
+const handleFramingCancel = () => {
+  isFraming.value = false;
+  framingTasks.value = [];
+};
 </script>
 
 <template>
@@ -264,22 +306,22 @@ const startProcessing = async () => {
       class="drop-zone"
       @dragover.prevent
       @drop="handleDrop"
+      @click="fileInputRef?.click()"
     >
       <input
+        ref="fileInputRef"
         type="file"
         multiple
         accept="image/*"
-        id="fileInput"
+        class="visually-hidden-input"
+        @click.stop
         @change="handleFileSelect"
       />
-      <label for="fileInput">
-        <div class="drop-zone-content">
-          <RiUploadCloud2Line class="upload-icon" size="36px" />
-          <span>Drop images here, or <span class="browse-link">browse</span></span>
-          <span
-            class="subtext">Supports single image or multi-file batches</span>
-        </div>
-      </label>
+      <div class="drop-zone-content">
+        <RiUploadCloud2Line class="upload-icon" size="36px" />
+        <span>Drop images here, or <span class="browse-link">browse</span></span>
+        <span class="subtext">Supports single image or multi-file batches</span>
+      </div>
     </div>
 
     <section class="options-section">
@@ -394,10 +436,10 @@ const startProcessing = async () => {
         v-if="!isProcessing && !downloadUrl"
         class="btn primary"
         :disabled="!selectedRatios.length || !selectedFormats.length"
-        @click="startProcessing"
+        @click="prepareFraming"
       >
         <RiCheckDoubleLine size="20px" />
-        <span>Process {{ queue.length }} {{ queue.length === 1 ? "Image" : "Images" }}</span>
+        <span>Review & Process {{ queue.length }} {{ queue.length === 1 ? "Image" : "Images" }}</span>
       </button>
 
       <div v-if="isProcessing" class="progress-wrapper">
@@ -422,5 +464,12 @@ const startProcessing = async () => {
         <span>Download ZIP Archive</span>
       </a>
     </div>
+
+    <FramingDialog
+      :is-open="isFraming"
+      :tasks="framingTasks"
+      @complete="handleFramingComplete"
+      @cancel="handleFramingCancel"
+    />
   </div>
 </template>
