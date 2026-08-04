@@ -62,6 +62,7 @@ const AVAILABLE_FORMATS: FormatSpec[] = [
 const availableRatios = ref<AspectRatioSpec[]>([...DEFAULT_RATIOS]);
 const selectedRatioIds = ref<string[]>(["1-1", "3-4", "4-3", "2-3", "3-2"]);
 const selectedFormatIds = ref<string[]>(["jpg", "png", "tiff"]);
+const cropEnabled = ref(true);
 
 const customWidth = ref<number | null>(null);
 const customHeight = ref<number | null>(null);
@@ -93,7 +94,9 @@ const selectedFormats = computed(() =>
 );
 
 const totalOutputsPerImage = computed(() =>
-  selectedRatios.value.length * selectedFormats.value.length
+  cropEnabled.value
+    ? selectedRatios.value.length * selectedFormats.value.length
+    : selectedFormats.value.length
 );
 
 const totalOutputFiles = computed(() =>
@@ -306,18 +309,21 @@ const startProcessing = async () => {
   );
 
   const options = {
-    ratios: selectedRatios.value.map(({ id, label, wRatio, hRatio }) => ({
-      id,
-      label,
-      wRatio,
-      hRatio,
-    })),
+    ratios: cropEnabled.value
+      ? selectedRatios.value.map(({ id, label, wRatio, hRatio }) => ({
+        id,
+        label,
+        wRatio,
+        hRatio,
+      }))
+      : [],
     formats: selectedFormats.value.map(({ id, extension, folder }) => ({
       id,
       extension,
       folder,
     })),
     frames: JSON.parse(JSON.stringify(toRaw(finalFrameResults.value))),
+    cropEnabled: cropEnabled.value,
   };
   const worker = new Worker(
     new URL("./workers/processor.worker.ts", import.meta.url),
@@ -377,11 +383,17 @@ const startProcessing = async () => {
 };
 
 const prepareFraming = () => {
-  if (
-    queue.value.length === 0 ||
-    !selectedRatios.value.length ||
-    !selectedFormats.value.length
-  ) {
+  if (queue.value.length === 0 || !selectedFormats.value.length) {
+    return;
+  }
+
+  if (!cropEnabled.value) {
+    finalFrameResults.value = [];
+    startProcessing();
+    return;
+  }
+
+  if (!selectedRatios.value.length) {
     return;
   }
 
@@ -459,6 +471,24 @@ const handleFramingCancel = () => {
       </div>
 
       <div class="options-group">
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            v-model="cropEnabled"
+            :disabled="isProcessing"
+          />
+          <span class="toggle-text">
+            <span class="toggle-title">Crop Images</span>
+            <span class="toggle-hint">
+              Crop into the selected aspect ratios before converting. Turn
+              off to only convert formats, keeping each image's original
+              dimensions.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div class="options-group" :class="{ 'group-disabled': !cropEnabled }">
         <label class="group-label">Aspect Ratios</label>
         <div class="chip-grid">
           <button
@@ -467,7 +497,7 @@ const handleFramingCancel = () => {
             type="button"
             class="chip"
             :class="{ active: selectedRatioIds.includes(ratio.id) }"
-            :disabled="isProcessing"
+            :disabled="isProcessing || !cropEnabled"
             @click="toggleRatio(ratio.id)"
           >
             {{ ratio.label }}
@@ -480,7 +510,7 @@ const handleFramingCancel = () => {
             type="number"
             placeholder="W"
             min="1"
-            :disabled="isProcessing"
+            :disabled="isProcessing || !cropEnabled"
             @keyup.enter="addCustomRatio"
           />
           <span class="ratio-separator">:</span>
@@ -489,13 +519,13 @@ const handleFramingCancel = () => {
             type="number"
             placeholder="H"
             min="1"
-            :disabled="isProcessing"
+            :disabled="isProcessing || !cropEnabled"
             @keyup.enter="addCustomRatio"
           />
           <button
             type="button"
             class="btn-secondary"
-            :disabled="isProcessing || !customWidth || !customHeight"
+            :disabled="isProcessing || !cropEnabled || !customWidth || !customHeight"
             @click="addCustomRatio"
           >
             <RiAddLine size="16px" />
@@ -588,8 +618,12 @@ const handleFramingCancel = () => {
 
     <div v-if="hasFiles" class="specs-summary">
       <RiImageLine size="18px" class="icon-accent" />
-      <span>
+      <span v-if="cropEnabled">
         {{ queue.length }} {{ queue.length === 1 ? "image" : "images" }} &times; {{ selectedRatios.length }} ratios &times; {{ selectedFormats.length }} formats =
+        <strong>{{ totalOutputFiles }} files total</strong>
+      </span>
+      <span v-else>
+        {{ queue.length }} {{ queue.length === 1 ? "image" : "images" }} &times; {{ selectedFormats.length }} formats (no cropping) =
         <strong>{{ totalOutputFiles }} files total</strong>
       </span>
     </div>
@@ -598,7 +632,7 @@ const handleFramingCancel = () => {
       <button
         v-if="!isProcessing && !downloadUrl"
         class="btn primary"
-        :disabled="!selectedRatios.length || !selectedFormats.length"
+        :disabled="(cropEnabled && !selectedRatios.length) || !selectedFormats.length"
         @click="prepareFraming"
       >
         <RiCheckDoubleLine size="20px" />
@@ -612,7 +646,7 @@ const handleFramingCancel = () => {
           <span>{{ totalProgress }}%</span>
         </div>
         <p class="status-text">
-          Cropping and converting images...
+          {{ cropEnabled ? "Cropping and converting images..." : "Converting images..." }}
           <span v-if="formattedEta">({{ formattedEta }})</span>
         </p>
       </div>

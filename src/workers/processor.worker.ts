@@ -24,6 +24,7 @@ interface ProcessOptions {
   ratios: AspectRatioSpec[];
   formats: FormatSpec[];
   frames: FrameResult[];
+  cropEnabled: boolean;
 }
 
 let vipsInstance: typeof Vips | null = null;
@@ -42,12 +43,21 @@ self.onmessage = async (
   }>,
 ) => {
   const { files, options } = e.data;
-  const { ratios, formats, frames } = options;
+  const { ratios, formats, frames, cropEnabled } = options;
 
-  if (!ratios.length || !formats.length) {
+  if (!formats.length) {
     self.postMessage({
       type: "ERROR",
-      error: "At least one aspect ratio and format must be selected.",
+      error: "At least one output format must be selected.",
+    });
+    return;
+  }
+
+  if (cropEnabled && !ratios.length) {
+    self.postMessage({
+      type: "ERROR",
+      error:
+        "At least one aspect ratio must be selected when cropping is enabled.",
     });
     return;
   }
@@ -62,7 +72,8 @@ self.onmessage = async (
 
     let completedTasks = 0;
     let successfulFiles = 0;
-    const totalTasks = files.length * ratios.length;
+    const tasksPerFile = cropEnabled ? ratios.length : 1;
+    const totalTasks = files.length * tasksPerFile;
 
     for (const fileItem of files) {
       self.postMessage({ type: "FILE_START", fileId: fileItem.id });
@@ -73,53 +84,78 @@ self.onmessage = async (
         const baseName = fileItem.name.replace(/\.[^/.]+$/, "");
         const inputBytes = new Uint8Array(fileItem.buffer);
         const image = vips.Image.newFromBuffer(inputBytes);
-        const imgWidth = image.width;
-        const imgHeight = image.height;
 
-        for (const ratio of ratios) {
-          const targetAspect = ratio.wRatio / ratio.hRatio;
-          const currentAspect = imgWidth / imgHeight;
+        if (cropEnabled) {
+          const imgWidth = image.width;
+          const imgHeight = image.height;
 
-          let cropW: number;
-          let cropH: number;
-          if (currentAspect > targetAspect) {
-            cropH = imgHeight;
-            cropW = Math.round(imgHeight * targetAspect);
-          } else {
-            cropW = imgWidth;
-            cropH = Math.round(imgWidth / targetAspect);
+          for (const ratio of ratios) {
+            const targetAspect = ratio.wRatio / ratio.hRatio;
+            const currentAspect = imgWidth / imgHeight;
+
+            let cropW: number;
+            let cropH: number;
+            if (currentAspect > targetAspect) {
+              cropH = imgHeight;
+              cropW = Math.round(imgHeight * targetAspect);
+            } else {
+              cropW = imgWidth;
+              cropH = Math.round(imgWidth / targetAspect);
+            }
+
+            const frame = frames.find((f) =>
+              f.taskId === `${fileItem.id}-${ratio.id}`
+            );
+            const panX = frame?.panX ?? 50;
+            const panY = frame?.panY ?? 50;
+
+            const left = Math.round(((imgWidth - cropW) * panX) / 100);
+            const top = Math.round(((imgHeight - cropH) * panY) / 100);
+
+            const cropped = image.crop(left, top, cropW, cropH);
+
+            const fileNamePrefix = files.length > 1
+              ? `${baseName}_${ratio.label}`
+              : ratio.label;
+
+            for (const fmt of formats) {
+              const folder = folderMap.get(fmt.id);
+              if (!folder) continue;
+
+              let buf: Uint8Array;
+              if (fmt.id === "jpg") {
+                buf = cropped.writeToBuffer(fmt.extension, { Q: 90 });
+              } else {
+                buf = cropped.writeToBuffer(fmt.extension);
+              }
+
+              folder.file(`${fileNamePrefix}${fmt.extension}`, buf);
+            }
+
+            cropped.delete();
+            completedTasks++;
+            ratiosCompletedForFile++;
+
+            self.postMessage({
+              type: "PROGRESS",
+              progress: Math.round((completedTasks / totalTasks) * 100),
+            });
           }
-
-          const frame = frames.find((f) =>
-            f.taskId === `${fileItem.id}-${ratio.id}`
-          );
-          const panX = frame?.panX ?? 50;
-          const panY = frame?.panY ?? 50;
-
-          const left = Math.round(((imgWidth - cropW) * panX) / 100);
-          const top = Math.round(((imgHeight - cropH) * panY) / 100);
-
-          const cropped = image.crop(left, top, cropW, cropH);
-
-          const fileNamePrefix = files.length > 1
-            ? `${baseName}_${ratio.label}`
-            : ratio.label;
-
+        } else {
           for (const fmt of formats) {
             const folder = folderMap.get(fmt.id);
             if (!folder) continue;
 
             let buf: Uint8Array;
             if (fmt.id === "jpg") {
-              buf = cropped.writeToBuffer(fmt.extension, { Q: 90 });
+              buf = image.writeToBuffer(fmt.extension, { Q: 90 });
             } else {
-              buf = cropped.writeToBuffer(fmt.extension);
+              buf = image.writeToBuffer(fmt.extension);
             }
 
-            folder.file(`${fileNamePrefix}${fmt.extension}`, buf);
+            folder.file(`${baseName}${fmt.extension}`, buf);
           }
 
-          cropped.delete();
           completedTasks++;
           ratiosCompletedForFile++;
 
@@ -133,7 +169,7 @@ self.onmessage = async (
         successfulFiles++;
         self.postMessage({ type: "FILE_DONE", fileId: fileItem.id });
       } catch (fileErr) {
-        const remaining = ratios.length - ratiosCompletedForFile;
+        const remaining = tasksPerFile - ratiosCompletedForFile;
         completedTasks += remaining;
 
         self.postMessage({
