@@ -369,8 +369,11 @@ body {
   flex-direction: row;
   gap: 1rem;
 
-  .process-more {
+  > * {
     flex: 1;
+  }
+
+  .process-more {
     justify-content: center;
     font-weight: bold;
   }
