@@ -3,7 +3,7 @@ import FramingDialog, {
   type FrameResult,
   type FrameTask,
 } from "./components/FramingDialog.vue";
-import { computed, ref, toRaw } from "vue";
+import { computed, ref, toRaw, watch } from "vue";
 import {
   RiAddLine,
   RiCheckDoubleLine,
@@ -64,10 +64,48 @@ const AVAILABLE_FORMATS: FormatSpec[] = [
   { id: "ico", label: "ICO (.ico)", extension: ".ico", folder: "ICO" },
 ];
 
-const availableRatios = ref<AspectRatioSpec[]>([...DEFAULT_RATIOS]);
-const selectedRatioIds = ref<string[]>(["1-1", "3-4", "4-3", "2-3", "3-2"]);
-const selectedFormatIds = ref<string[]>(["jpg", "png", "tiff"]);
-const cropEnabled = ref(true);
+const STORAGE_KEYS = {
+  CROP_ENABLED: "aspecta_crop_enabled",
+  RATIO_IDS: "aspecta_selected_ratio_ids",
+  FORMAT_IDS: "aspecta_selected_format_ids",
+  AVAILABLE_RATIOS: "aspecta_available_ratios",
+} as const;
+
+const loadSavedSetting = <T>(key: string, fallback: T): T => {
+  try {
+    const item = localStorage.getItem(key);
+    return item !== null ? (JSON.parse(item) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const availableRatios = ref<AspectRatioSpec[]>(
+  loadSavedSetting(STORAGE_KEYS.AVAILABLE_RATIOS, [...DEFAULT_RATIOS]),
+);
+const selectedRatioIds = ref<string[]>(
+  loadSavedSetting(STORAGE_KEYS.RATIO_IDS, ["1-1", "3-4", "4-3", "2-3", "3-2"]),
+);
+const selectedFormatIds = ref<string[]>(
+  loadSavedSetting(STORAGE_KEYS.FORMAT_IDS, ["jpg", "png", "tiff"]),
+);
+const cropEnabled = ref<boolean>(
+  loadSavedSetting(STORAGE_KEYS.CROP_ENABLED, true),
+);
+
+watch(
+  [cropEnabled, selectedRatioIds, selectedFormatIds, availableRatios],
+  ([newCrop, newRatios, newFormats, newAvailRatios]) => {
+    localStorage.setItem(STORAGE_KEYS.CROP_ENABLED, JSON.stringify(newCrop));
+    localStorage.setItem(STORAGE_KEYS.RATIO_IDS, JSON.stringify(newRatios));
+    localStorage.setItem(STORAGE_KEYS.FORMAT_IDS, JSON.stringify(newFormats));
+    localStorage.setItem(
+      STORAGE_KEYS.AVAILABLE_RATIOS,
+      JSON.stringify(newAvailRatios),
+    );
+  },
+  { deep: true },
+);
 
 const customWidth = ref<number | null>(null);
 const customHeight = ref<number | null>(null);
