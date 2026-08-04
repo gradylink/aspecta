@@ -1,5 +1,12 @@
-import Vips from "wasm-vips";
 import JSZip from "jszip";
+import {
+  ImageMagick,
+  type IMagickImage,
+  initializeImageMagick,
+  MagickFormat,
+  MagickGeometry,
+} from "@imagemagick/magick-wasm";
+import magickWasmUrl from "@imagemagick/magick-wasm/magick.wasm?url";
 
 interface AspectRatioSpec {
   id: string;
@@ -27,14 +34,43 @@ interface ProcessOptions {
   cropEnabled: boolean;
 }
 
-let vipsInstance: typeof Vips | null = null;
-
-const getVips = async (): Promise<typeof Vips> => {
-  if (!vipsInstance) {
-    vipsInstance = await Vips({ dynamicLibraries: [] });
-  }
-  return vipsInstance;
+const MAGICK_FORMAT_MAP: Record<string, MagickFormat> = {
+  jpg: MagickFormat.Jpeg,
+  png: MagickFormat.Png,
+  tiff: MagickFormat.Tiff,
+  webp: MagickFormat.WebP,
+  avif: MagickFormat.Avif,
+  gif: MagickFormat.Gif,
+  bmp: MagickFormat.Bmp,
+  jxl: MagickFormat.Jxl,
+  ico: MagickFormat.Ico,
 };
+
+let magickReady: Promise<void> | null = null;
+
+const ensureMagickInitialized = async (): Promise<void> => {
+  if (!magickReady) {
+    magickReady = (async () => {
+      const response = await fetch(magickWasmUrl);
+      const wasmBytes = await response.arrayBuffer();
+      await initializeImageMagick(wasmBytes);
+    })();
+  }
+  return magickReady;
+};
+
+const writeImage = (image: IMagickImage, format: MagickFormat): Uint8Array => {
+  let output: Uint8Array = new Uint8Array();
+  image.write(format, (data) => {
+    output = data.slice();
+  });
+  return output;
+};
+
+const isUnsupportedFormatError = (message: string): boolean =>
+  /no decode delegate|unable to read|not a supported|unable to open/i.test(
+    message,
+  );
 
 self.onmessage = async (
   e: MessageEvent<{
@@ -63,7 +99,8 @@ self.onmessage = async (
   }
 
   try {
-    const vips = await getVips();
+    await ensureMagickInitialized();
+
     const zip = new JSZip();
     const folderMap = new Map<string, JSZip>();
     for (const fmt of formats) {
@@ -83,56 +120,77 @@ self.onmessage = async (
       try {
         const baseName = fileItem.name.replace(/\.[^/.]+$/, "");
         const inputBytes = new Uint8Array(fileItem.buffer);
-        const image = vips.Image.newFromBuffer(inputBytes);
 
-        if (cropEnabled) {
-          const imgWidth = image.width;
-          const imgHeight = image.height;
+        ImageMagick.read(inputBytes, (image) => {
+          if (cropEnabled) {
+            const imgWidth = image.width;
+            const imgHeight = image.height;
 
-          for (const ratio of ratios) {
-            const targetAspect = ratio.wRatio / ratio.hRatio;
-            const currentAspect = imgWidth / imgHeight;
+            for (const ratio of ratios) {
+              const targetAspect = ratio.wRatio / ratio.hRatio;
+              const currentAspect = imgWidth / imgHeight;
 
-            let cropW: number;
-            let cropH: number;
-            if (currentAspect > targetAspect) {
-              cropH = imgHeight;
-              cropW = Math.round(imgHeight * targetAspect);
-            } else {
-              cropW = imgWidth;
-              cropH = Math.round(imgWidth / targetAspect);
+              let cropW: number;
+              let cropH: number;
+              if (currentAspect > targetAspect) {
+                cropH = imgHeight;
+                cropW = Math.round(imgHeight * targetAspect);
+              } else {
+                cropW = imgWidth;
+                cropH = Math.round(imgWidth / targetAspect);
+              }
+
+              const frame = frames.find(
+                (f) => f.taskId === `${fileItem.id}-${ratio.id}`,
+              );
+              const panX = frame?.panX ?? 50;
+              const panY = frame?.panY ?? 50;
+
+              const left = Math.round(((imgWidth - cropW) * panX) / 100);
+              const top = Math.round(((imgHeight - cropH) * panY) / 100);
+
+              const fileNamePrefix = files.length > 1
+                ? `${baseName}_${ratio.label}`
+                : ratio.label;
+
+              image.clone((clone) => {
+                clone.crop(new MagickGeometry(left, top, cropW, cropH));
+                clone.resetPage();
+
+                for (const fmt of formats) {
+                  const folder = folderMap.get(fmt.id);
+                  if (!folder) continue;
+
+                  const magickFormat = MAGICK_FORMAT_MAP[fmt.id];
+                  if (!magickFormat) continue;
+
+                  clone.quality = fmt.id === "jpg" ? 90 : 92;
+                  const buf = writeImage(clone, magickFormat);
+                  folder.file(`${fileNamePrefix}${fmt.extension}`, buf);
+                }
+              });
+
+              completedTasks++;
+              ratiosCompletedForFile++;
+
+              self.postMessage({
+                type: "PROGRESS",
+                progress: Math.round((completedTasks / totalTasks) * 100),
+              });
             }
-
-            const frame = frames.find((f) =>
-              f.taskId === `${fileItem.id}-${ratio.id}`
-            );
-            const panX = frame?.panX ?? 50;
-            const panY = frame?.panY ?? 50;
-
-            const left = Math.round(((imgWidth - cropW) * panX) / 100);
-            const top = Math.round(((imgHeight - cropH) * panY) / 100);
-
-            const cropped = image.crop(left, top, cropW, cropH);
-
-            const fileNamePrefix = files.length > 1
-              ? `${baseName}_${ratio.label}`
-              : ratio.label;
-
+          } else {
             for (const fmt of formats) {
               const folder = folderMap.get(fmt.id);
               if (!folder) continue;
 
-              let buf: Uint8Array;
-              if (fmt.id === "jpg") {
-                buf = cropped.writeToBuffer(fmt.extension, { Q: 90 });
-              } else {
-                buf = cropped.writeToBuffer(fmt.extension);
-              }
+              const magickFormat = MAGICK_FORMAT_MAP[fmt.id];
+              if (!magickFormat) continue;
 
-              folder.file(`${fileNamePrefix}${fmt.extension}`, buf);
+              image.quality = fmt.id === "jpg" ? 90 : 92;
+              const buf = writeImage(image, magickFormat);
+              folder.file(`${baseName}${fmt.extension}`, buf);
             }
 
-            cropped.delete();
             completedTasks++;
             ratiosCompletedForFile++;
 
@@ -141,41 +199,23 @@ self.onmessage = async (
               progress: Math.round((completedTasks / totalTasks) * 100),
             });
           }
-        } else {
-          for (const fmt of formats) {
-            const folder = folderMap.get(fmt.id);
-            if (!folder) continue;
+        });
 
-            let buf: Uint8Array;
-            if (fmt.id === "jpg") {
-              buf = image.writeToBuffer(fmt.extension, { Q: 90 });
-            } else {
-              buf = image.writeToBuffer(fmt.extension);
-            }
-
-            folder.file(`${baseName}${fmt.extension}`, buf);
-          }
-
-          completedTasks++;
-          ratiosCompletedForFile++;
-
-          self.postMessage({
-            type: "PROGRESS",
-            progress: Math.round((completedTasks / totalTasks) * 100),
-          });
-        }
-
-        image.delete();
         successfulFiles++;
         self.postMessage({ type: "FILE_DONE", fileId: fileItem.id });
       } catch (fileErr) {
         const remaining = tasksPerFile - ratiosCompletedForFile;
         completedTasks += remaining;
 
+        let errorMessage = (fileErr as Error).message;
+        if (isUnsupportedFormatError(errorMessage)) {
+          errorMessage = "Unsupported file format.";
+        }
+
         self.postMessage({
           type: "FILE_ERROR",
           fileId: fileItem.id,
-          error: (fileErr as Error).message,
+          error: ["", errorMessage],
         });
         self.postMessage({
           type: "PROGRESS",

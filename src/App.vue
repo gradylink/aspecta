@@ -57,6 +57,11 @@ const AVAILABLE_FORMATS: FormatSpec[] = [
   { id: "png", label: "PNG (.png)", extension: ".png", folder: "PNG" },
   { id: "tiff", label: "TIFF (.tiff)", extension: ".tiff", folder: "TIFF" },
   { id: "webp", label: "WebP (.webp)", extension: ".webp", folder: "WEBP" },
+  { id: "avif", label: "AVIF (.avif)", extension: ".avif", folder: "AVIF" },
+  { id: "gif", label: "GIF (.gif)", extension: ".gif", folder: "GIF" },
+  { id: "jxl", label: "JXL (.jxl)", extension: ".jxl", folder: "JXL" },
+  { id: "bmp", label: "BMP (.bmp)", extension: ".bmp", folder: "BMP" },
+  { id: "ico", label: "ICO (.ico)", extension: ".ico", folder: "ICO" },
 ];
 
 const availableRatios = ref<AspectRatioSpec[]>([...DEFAULT_RATIOS]);

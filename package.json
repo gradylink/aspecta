@@ -10,10 +10,10 @@
   },
   "dependencies": {
     "@catppuccin/palette": "^1.8.0",
+    "@imagemagick/magick-wasm": "^0.0.42",
     "@remixicon/vue": "^4.9.0",
     "jszip": "^3.10.1",
-    "vue": "^3.5.40",
-    "wasm-vips": "^0.0.18"
+    "vue": "^3.5.40"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
