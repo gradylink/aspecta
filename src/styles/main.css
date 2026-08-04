@@ -86,7 +86,8 @@ body {
   cursor: pointer;
   transition: border-color 0.2s ease, background-color 0.2s ease;
 
-  &:hover {
+  &:hover,
+  &.drag-over {
     border-color: var(--accent-color);
     background-color: var(--surface-hover);
   }

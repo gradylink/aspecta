@@ -75,6 +75,8 @@ const framingTasks = ref<FrameTask[]>([]);
 const finalFrameResults = ref<FrameResult[]>([]);
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
+const isDraggingOver = ref(false);
+const isScanningFolder = ref(false);
 
 const hasFiles = computed(() => queue.value.length > 0);
 
@@ -166,11 +168,85 @@ const addFiles = (fileList: FileList | File[]) => {
 const handleFileSelect = (event: Event) => {
   const target = event.target as HTMLInputElement;
   if (target.files) addFiles(target.files);
+  target.value = "";
 };
 
-const handleDrop = (event: DragEvent) => {
+const traverseFileTree = (entry: FileSystemEntry): Promise<File[]> => {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      (entry as FileSystemFileEntry).file(
+        (file) => resolve([file]),
+        () => resolve([]),
+      );
+      return;
+    }
+
+    if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader();
+      const collected: File[] = [];
+
+      const readBatch = () => {
+        reader.readEntries(async (entries) => {
+          if (!entries.length) {
+            resolve(collected);
+            return;
+          }
+
+          const nested = await Promise.all(
+            entries.map((childEntry) => traverseFileTree(childEntry)),
+          );
+          nested.forEach((files) => collected.push(...files));
+
+          readBatch();
+        }, () => resolve(collected));
+      };
+
+      readBatch();
+      return;
+    }
+
+    resolve([]);
+  });
+};
+
+const handleDrop = async (event: DragEvent) => {
   event.preventDefault();
+  isDraggingOver.value = false;
+
+  const items = event.dataTransfer?.items;
+  const supportsEntries = !!items?.length &&
+    typeof items[0].webkitGetAsEntry === "function";
+
+  if (supportsEntries) {
+    const entries = Array.from(items!)
+      .map((item) => item.webkitGetAsEntry())
+      .filter((entry) => entry !== null);
+
+    if (entries.length) {
+      isScanningFolder.value = true;
+      try {
+        const nestedFiles = await Promise.all(
+          entries.map((entry) => traverseFileTree(entry)),
+        );
+        const files = nestedFiles.flat();
+        if (files.length) addFiles(files);
+      } finally {
+        isScanningFolder.value = false;
+      }
+      return;
+    }
+  }
+
   if (event.dataTransfer?.files) addFiles(event.dataTransfer.files);
+};
+
+const handleDragOver = (event: DragEvent) => {
+  event.preventDefault();
+  isDraggingOver.value = true;
+};
+
+const handleDragLeave = () => {
+  isDraggingOver.value = false;
 };
 
 const removeItem = (id: string) => {
@@ -315,7 +391,9 @@ const handleFramingCancel = () => {
 
     <div
       class="drop-zone"
-      @dragover.prevent
+      :class="{ 'drag-over': isDraggingOver }"
+      @dragover="handleDragOver"
+      @dragleave="handleDragLeave"
       @drop="handleDrop"
       @click="fileInputRef?.click()"
     >
@@ -328,10 +406,15 @@ const handleFramingCancel = () => {
         @click.stop
         @change="handleFileSelect"
       />
-      <div class="drop-zone-content">
+      <div v-if="isScanningFolder" class="drop-zone-content">
         <RiUploadCloud2Line class="upload-icon" size="36px" />
-        <span>Drop images here, or <span class="browse-link">browse</span></span>
-        <span class="subtext">Supports single image or multi-file batches</span>
+        <span>Scanning folder for images&hellip;</span>
+      </div>
+      <div v-else class="drop-zone-content">
+        <RiUploadCloud2Line class="upload-icon" size="36px" />
+        <span>Drop images or folders here, or <span class="browse-link">browse</span></span>
+        <span
+          class="subtext">Supports single images, multi-file batches, and nested folders</span>
       </div>
     </div>
 
