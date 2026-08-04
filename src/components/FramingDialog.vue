@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import {
   RiArrowRightLine,
   RiSkipForwardLine,
@@ -37,13 +37,17 @@ const results = ref<FrameResult[]>([]);
 
 const panX = ref(50);
 const panY = ref(50);
+
 const isDragging = ref(false);
 const startMouseX = ref(0);
 const startMouseY = ref(0);
 const startPanX = ref(50);
 const startPanY = ref(50);
 
-const slideAxis = ref<"x" | "y" | "none">("none");
+const naturalWidth = ref(0);
+const naturalHeight = ref(0);
+
+const stageRef = ref<HTMLDivElement | null>(null);
 const imageRef = ref<HTMLImageElement | null>(null);
 
 const currentTask = computed(() => props.tasks[currentIndex.value] || null);
@@ -57,27 +61,64 @@ const hasMoreRatiosForImage = computed(() => {
 const clamp = (val: number, min: number, max: number) =>
   Math.min(Math.max(val, min), max);
 
-const handleImageLoad = (event: Event) => {
-  const img = event.target as HTMLImageElement;
-  if (!currentTask.value) return;
-
-  const imageAspect = img.naturalWidth / img.naturalHeight;
-  const containerAspect = currentTask.value.wRatio / currentTask.value.hRatio;
-
-  if (Math.abs(imageAspect - containerAspect) < 0.01) {
-    slideAxis.value = "none";
-  } else if (imageAspect > containerAspect) {
-    slideAxis.value = "x";
-  } else {
-    slideAxis.value = "y";
+const cropAxis = computed<"x" | "y" | "none">(() => {
+  if (!currentTask.value || !naturalWidth.value || !naturalHeight.value) {
+    return "none";
   }
+  const imageAspect = naturalWidth.value / naturalHeight.value;
+  const targetAspect = currentTask.value.wRatio / currentTask.value.hRatio;
+  if (Math.abs(imageAspect - targetAspect) < 0.001) return "none";
+  return imageAspect > targetAspect ? "x" : "y";
+});
 
-  panX.value = 50;
-  panY.value = 50;
+const cropWidthFrac = computed(() => {
+  if (!currentTask.value || !naturalWidth.value || !naturalHeight.value) {
+    return 1;
+  }
+  if (cropAxis.value !== "x") return 1;
+  const imageAspect = naturalWidth.value / naturalHeight.value;
+  const targetAspect = currentTask.value.wRatio / currentTask.value.hRatio;
+  return targetAspect / imageAspect;
+});
+
+const cropHeightFrac = computed(() => {
+  if (!currentTask.value || !naturalWidth.value || !naturalHeight.value) {
+    return 1;
+  }
+  if (cropAxis.value !== "y") return 1;
+  const imageAspect = naturalWidth.value / naturalHeight.value;
+  const targetAspect = currentTask.value.wRatio / currentTask.value.hRatio;
+  return imageAspect / targetAspect;
+});
+
+const cropRectStyle = computed(() => {
+  const wPct = cropWidthFrac.value * 100;
+  const hPct = cropHeightFrac.value * 100;
+  const leftPct = (100 - wPct) * (panX.value / 100);
+  const topPct = (100 - hPct) * (panY.value / 100);
+
+  return {
+    left: `${leftPct}%`,
+    top: `${topPct}%`,
+    width: `${wPct}%`,
+    height: `${hPct}%`,
+  };
+});
+
+const updateNaturalSize = () => {
+  const img = imageRef.value;
+  if (img && img.complete && img.naturalWidth) {
+    naturalWidth.value = img.naturalWidth;
+    naturalHeight.value = img.naturalHeight;
+  }
+};
+
+const handleImageLoad = () => {
+  updateNaturalSize();
 };
 
 const onPointerDown = (event: PointerEvent) => {
-  if (slideAxis.value === "none" || !imageRef.value) return;
+  if (cropAxis.value === "none" || !stageRef.value) return;
 
   isDragging.value = true;
   startMouseX.value = event.clientX;
@@ -85,27 +126,34 @@ const onPointerDown = (event: PointerEvent) => {
   startPanX.value = panX.value;
   startPanY.value = panY.value;
 
-  imageRef.value.setPointerCapture(event.pointerId);
+  (event.target as HTMLElement).setPointerCapture(event.pointerId);
 };
 
 const onPointerMove = (event: PointerEvent) => {
-  if (!isDragging.value) return;
+  if (!isDragging.value || !stageRef.value) return;
 
-  const sensitivity = 0.2;
+  const stageRect = stageRef.value.getBoundingClientRect();
+  if (!stageRect.width || !stageRect.height) return;
 
-  if (slideAxis.value === "x") {
+  if (cropAxis.value === "x") {
     const deltaX = event.clientX - startMouseX.value;
-    panX.value = clamp(startPanX.value - deltaX * sensitivity, 0, 100);
-  } else if (slideAxis.value === "y") {
+    const deltaLeftPct = (deltaX / stageRect.width) * 100;
+    const range = 100 - cropWidthFrac.value * 100;
+    const deltaPan = range > 0 ? (deltaLeftPct / range) * 100 : 0;
+    panX.value = clamp(startPanX.value + deltaPan, 0, 100);
+  } else if (cropAxis.value === "y") {
     const deltaY = event.clientY - startMouseY.value;
-    panY.value = clamp(startPanY.value - deltaY * sensitivity, 0, 100);
+    const deltaTopPct = (deltaY / stageRect.height) * 100;
+    const range = 100 - cropHeightFrac.value * 100;
+    const deltaPan = range > 0 ? (deltaTopPct / range) * 100 : 0;
+    panY.value = clamp(startPanY.value + deltaPan, 0, 100);
   }
 };
 
 const onPointerUp = (event: PointerEvent) => {
-  if (!isDragging.value || !imageRef.value) return;
+  if (!isDragging.value) return;
   isDragging.value = false;
-  imageRef.value.releasePointerCapture(event.pointerId);
+  (event.target as HTMLElement).releasePointerCapture(event.pointerId);
 };
 
 const saveCurrentAndNext = () => {
@@ -119,8 +167,6 @@ const saveCurrentAndNext = () => {
 
   if (currentIndex.value < props.tasks.length - 1) {
     currentIndex.value++;
-    panX.value = 50;
-    panY.value = 50;
   } else {
     emit("complete", results.value);
     reset();
@@ -142,8 +188,6 @@ const skipRemainingInImage = () => {
 
   if (idx < props.tasks.length) {
     currentIndex.value = idx;
-    panX.value = 50;
-    panY.value = 50;
   } else {
     emit("complete", results.value);
     reset();
@@ -171,12 +215,21 @@ const reset = () => {
   results.value = [];
   panX.value = 50;
   panY.value = 50;
+  naturalWidth.value = 0;
+  naturalHeight.value = 0;
 };
 
 watch(() => props.isOpen, (newVal) => {
   if (newVal) {
     reset();
   }
+});
+
+watch(currentTask, async () => {
+  panX.value = 50;
+  panY.value = 50;
+  await nextTick();
+  updateNaturalSize();
 });
 </script>
 
@@ -190,22 +243,22 @@ watch(() => props.isOpen, (newVal) => {
 
       <div class="dialog-body" v-if="currentTask">
         <p class="helper-text">
-          {{ slideAxis === 'none' ? 'Perfect fit, no panning needed.' : 'Click and drag to slide the image into frame.' }}
+          {{ cropAxis === 'none' ? 'Perfect fit, no cropping needed.' : 'Drag the frame to reposition the crop.' }}
         </p>
 
         <div class="framing-container-wrapper">
-          <div
-            class="framing-container"
-            :style="{ aspectRatio: `${currentTask.wRatio} / ${currentTask.hRatio}` }"
-          >
+          <div ref="stageRef" class="frame-stage">
             <img
               ref="imageRef"
               :src="currentTask.previewUrl"
-              :style="{ objectPosition: `${panX}% ${panY}%` }"
-              class="framing-image"
-              :class="{ 'cursor-grab': slideAxis !== 'none', 'cursor-grabbing': isDragging }"
+              class="frame-image"
               draggable="false"
               @load="handleImageLoad"
+            />
+            <div
+              class="crop-rect"
+              :class="{ 'cursor-grab': cropAxis !== 'none', 'cursor-grabbing': isDragging }"
+              :style="cropRectStyle"
               @pointerdown="onPointerDown"
               @pointermove="onPointerMove"
               @pointerup="onPointerUp"
@@ -260,8 +313,8 @@ watch(() => props.isOpen, (newVal) => {
   background: var(--bg-color);
   border-radius: var(--radius);
   width: 90%;
-  max-width: 600px;
-  max-height: 90vh;
+  max-width: min(92vw, 1100px);
+  max-height: 92vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -320,21 +373,45 @@ watch(() => props.isOpen, (newVal) => {
   padding: var(--radius);
 }
 
-.framing-container {
+.frame-stage {
   position: relative;
-  width: 100%;
+  display: inline-block;
+  line-height: 0;
+  max-width: 100%;
   max-height: 100%;
-  overflow: hidden;
-  border: 2px dashed var(--border-color);
   border-radius: var(--radius);
+  overflow: hidden;
 }
 
-.framing-image {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+.frame-image {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  height: 50vh;
+  object-fit: contain;
   user-select: none;
+  pointer-events: none;
+}
+
+.crop-rect {
+  position: absolute;
+  box-shadow: 0 0 0 2000px rgba(0, 0, 0, 0.6);
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 2px;
   touch-action: none;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.35) 1px, transparent 1px) 0 33.33% /
+    100% 33.33%,
+    linear-gradient(rgba(255, 255, 255, 0.35) 1px, transparent 1px) 0 66.66% /
+    100% 33.33%,
+    linear-gradient(90deg, rgba(255, 255, 255, 0.35) 1px, transparent 1px)
+    33.33% 0 /
+    33.33% 100%,
+    linear-gradient(90deg, rgba(255, 255, 255, 0.35) 1px, transparent 1px)
+    66.66% 0 /
+    33.33% 100%;
+  background-repeat: no-repeat;
 }
 
 .cursor-grab {
