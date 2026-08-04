@@ -55,76 +55,105 @@ self.onmessage = async (
   try {
     const vips = await getVips();
     const zip = new JSZip();
-
     const folderMap = new Map<string, JSZip>();
     for (const fmt of formats) {
       folderMap.set(fmt.id, zip.folder(fmt.folder)!);
     }
 
     let completedTasks = 0;
+    let successfulFiles = 0;
     const totalTasks = files.length * ratios.length;
 
     for (const fileItem of files) {
-      const baseName = fileItem.name.replace(/\.[^/.]+$/, "");
-      const inputBytes = new Uint8Array(fileItem.buffer);
+      self.postMessage({ type: "FILE_START", fileId: fileItem.id });
 
-      const image = vips.Image.newFromBuffer(inputBytes);
-      const imgWidth = image.width;
-      const imgHeight = image.height;
+      let ratiosCompletedForFile = 0;
 
-      for (const ratio of ratios) {
-        const targetAspect = ratio.wRatio / ratio.hRatio;
-        const currentAspect = imgWidth / imgHeight;
+      try {
+        const baseName = fileItem.name.replace(/\.[^/.]+$/, "");
+        const inputBytes = new Uint8Array(fileItem.buffer);
+        const image = vips.Image.newFromBuffer(inputBytes);
+        const imgWidth = image.width;
+        const imgHeight = image.height;
 
-        let cropW: number;
-        let cropH: number;
+        for (const ratio of ratios) {
+          const targetAspect = ratio.wRatio / ratio.hRatio;
+          const currentAspect = imgWidth / imgHeight;
 
-        if (currentAspect > targetAspect) {
-          cropH = imgHeight;
-          cropW = Math.round(imgHeight * targetAspect);
-        } else {
-          cropW = imgWidth;
-          cropH = Math.round(imgWidth / targetAspect);
-        }
-
-        const frame = frames.find((f) =>
-          f.taskId === `${fileItem.id}-${ratio.id}`
-        );
-        const panX = frame?.panX ?? 50;
-        const panY = frame?.panY ?? 50;
-
-        const left = Math.round(((imgWidth - cropW) * panX) / 100);
-        const top = Math.round(((imgHeight - cropH) * panY) / 100);
-
-        const cropped = image.crop(left, top, cropW, cropH);
-        const fileNamePrefix = files.length > 1
-          ? `${baseName}_${ratio.label}`
-          : ratio.label;
-
-        for (const fmt of formats) {
-          const folder = folderMap.get(fmt.id);
-          if (!folder) continue;
-
-          let buf: Uint8Array;
-          if (fmt.id === "jpg") {
-            buf = cropped.writeToBuffer(fmt.extension, { Q: 90 });
+          let cropW: number;
+          let cropH: number;
+          if (currentAspect > targetAspect) {
+            cropH = imgHeight;
+            cropW = Math.round(imgHeight * targetAspect);
           } else {
-            buf = cropped.writeToBuffer(fmt.extension);
+            cropW = imgWidth;
+            cropH = Math.round(imgWidth / targetAspect);
           }
 
-          folder.file(`${fileNamePrefix}${fmt.extension}`, buf);
+          const frame = frames.find((f) =>
+            f.taskId === `${fileItem.id}-${ratio.id}`
+          );
+          const panX = frame?.panX ?? 50;
+          const panY = frame?.panY ?? 50;
+
+          const left = Math.round(((imgWidth - cropW) * panX) / 100);
+          const top = Math.round(((imgHeight - cropH) * panY) / 100);
+
+          const cropped = image.crop(left, top, cropW, cropH);
+
+          const fileNamePrefix = files.length > 1
+            ? `${baseName}_${ratio.label}`
+            : ratio.label;
+
+          for (const fmt of formats) {
+            const folder = folderMap.get(fmt.id);
+            if (!folder) continue;
+
+            let buf: Uint8Array;
+            if (fmt.id === "jpg") {
+              buf = cropped.writeToBuffer(fmt.extension, { Q: 90 });
+            } else {
+              buf = cropped.writeToBuffer(fmt.extension);
+            }
+
+            folder.file(`${fileNamePrefix}${fmt.extension}`, buf);
+          }
+
+          cropped.delete();
+          completedTasks++;
+          ratiosCompletedForFile++;
+
+          self.postMessage({
+            type: "PROGRESS",
+            progress: Math.round((completedTasks / totalTasks) * 100),
+          });
         }
 
-        cropped.delete();
+        image.delete();
+        successfulFiles++;
+        self.postMessage({ type: "FILE_DONE", fileId: fileItem.id });
+      } catch (fileErr) {
+        const remaining = ratios.length - ratiosCompletedForFile;
+        completedTasks += remaining;
 
-        completedTasks++;
+        self.postMessage({
+          type: "FILE_ERROR",
+          fileId: fileItem.id,
+          error: (fileErr as Error).message,
+        });
         self.postMessage({
           type: "PROGRESS",
           progress: Math.round((completedTasks / totalTasks) * 100),
         });
       }
+    }
 
-      image.delete();
+    if (successfulFiles === 0) {
+      self.postMessage({
+        type: "ERROR",
+        error: "All images failed to process.",
+      });
+      return;
     }
 
     const zipBlob = await zip.generateAsync({ type: "blob" });

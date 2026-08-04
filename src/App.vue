@@ -7,10 +7,13 @@ import { computed, ref, toRaw } from "vue";
 import {
   RiAddLine,
   RiCheckDoubleLine,
+  RiCheckLine,
   RiCloseLine,
   RiDeleteBinLine,
+  RiErrorWarningLine,
   RiFolderDownloadLine,
   RiImageLine,
+  RiLoader4Line,
   RiSettings3Line,
   RiUploadCloud2Line,
 } from "@remixicon/vue";
@@ -20,6 +23,7 @@ interface QueueItem {
   file: File;
   previewUrl: string;
   status: "pending" | "processing" | "done" | "error";
+  errorMessage?: string;
 }
 
 interface AspectRatioSpec {
@@ -105,6 +109,14 @@ const formattedEta = computed(() => {
   }
   return `${secs}s remaining`;
 });
+
+const failedItems = computed(() =>
+  queue.value.filter((item) => item.status === "error")
+);
+
+const succeededCount = computed(() =>
+  queue.value.filter((item) => item.status === "done").length
+);
 
 const addCustomRatio = () => {
   if (!customWidth.value || !customHeight.value) return;
@@ -280,6 +292,11 @@ const startProcessing = async () => {
   startTime.value = Date.now();
   etaSeconds.value = null;
 
+  queue.value.forEach((item) => {
+    item.status = "pending";
+    item.errorMessage = undefined;
+  });
+
   const filePayloads = await Promise.all(
     queue.value.map(async (item) => ({
       id: item.id,
@@ -308,9 +325,26 @@ const startProcessing = async () => {
   );
 
   worker.onmessage = (e) => {
-    const { type, progress, blob, error } = e.data;
+    const { type, progress, blob, error, fileId } = e.data;
 
-    if (type === "PROGRESS") {
+    if (type === "FILE_START") {
+      const item = queue.value.find((i) => i.id === fileId);
+      if (item) item.status = "processing";
+    } else if (type === "FILE_DONE") {
+      const item = queue.value.find((i) => i.id === fileId);
+      if (item) item.status = "done";
+    } else if (type === "FILE_ERROR") {
+      const item = queue.value.find((i) => i.id === fileId);
+      if (item) {
+        item.status = "error";
+        item.errorMessage = error[1];
+        if (
+          /buffer is not in a known format/.test(item.errorMessage as string)
+        ) {
+          item.errorMessage = "Unsupported file format.";
+        }
+      }
+    } else if (type === "PROGRESS") {
       totalProgress.value = progress;
 
       if (startTime.value && progress > 0) {
@@ -373,7 +407,7 @@ const prepareFraming = () => {
 const handleFramingComplete = (results: FrameResult[]) => {
   finalFrameResults.value = results;
   isFraming.value = false;
-  startProcessing(); // Triggers the worker after framing is done
+  startProcessing();
 };
 
 const handleFramingCancel = () => {
@@ -498,13 +532,48 @@ const handleFramingCancel = () => {
       </div>
 
       <ul class="file-grid">
-        <li v-for="item in queue" :key="item.id" class="file-card">
+        <li
+          v-for="item in queue"
+          :key="item.id"
+          class="file-card"
+          :class="{ 'file-card-error': item.status === 'error' }"
+        >
           <img :src="item.previewUrl" :alt="item.file.name" class="thumb" />
           <div class="file-info">
             <span class="file-name">{{ item.file.name }}</span>
             <span
-              class="file-size">{{ (item.file.size / 1024 / 1024).toFixed(2) }} MB</span>
+              v-if="item.status === 'error'"
+              class="file-size file-error-text"
+              :title="item.errorMessage"
+            >{{ item.errorMessage || "Failed to process" }}</span>
+            <span
+              v-else
+              class="file-size"
+            >{{ (item.file.size / 1024 / 1024).toFixed(2) }} MB</span>
           </div>
+
+          <span
+            v-if="item.status === 'processing'"
+            class="status-icon status-processing"
+            title="Processing"
+          >
+            <RiLoader4Line size="18px" class="spin" />
+          </span>
+          <span
+            v-else-if="item.status === 'done'"
+            class="status-icon status-done"
+            title="Done"
+          >
+            <RiCheckLine size="18px" />
+          </span>
+          <span
+            v-else-if="item.status === 'error'"
+            class="status-icon status-error"
+            :title="item.errorMessage || 'Failed to process'"
+          >
+            <RiErrorWarningLine size="18px" />
+          </span>
+
           <button
             class="btn-remove"
             @click="removeItem(item.id)"
@@ -564,6 +633,17 @@ const handleFramingCancel = () => {
         </button>
       </template>
     </div>
+
+    <p v-if="downloadUrl && failedItems.length" class="failure-banner">
+      <RiErrorWarningLine size="16px" />
+      <span>
+        {{ succeededCount }} of {{ queue.length }} images processed
+        successfully. {{ failedItems.length }}
+        {{ failedItems.length === 1 ? "image" : "images" }} failed and
+        {{ failedItems.length === 1 ? "was" : "were" }} skipped - hover the
+        warning icon on a file for details.
+      </span>
+    </p>
 
     <FramingDialog
       :is-open="isFraming"
