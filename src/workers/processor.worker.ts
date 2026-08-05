@@ -19,6 +19,7 @@ interface FormatSpec {
   id: string;
   extension: string;
   folder: string;
+  quality?: number;
 }
 
 interface FrameResult {
@@ -164,7 +165,7 @@ self.onmessage = async (
                   const magickFormat = MAGICK_FORMAT_MAP[fmt.id];
                   if (!magickFormat) continue;
 
-                  clone.quality = fmt.id === "jpg" ? 90 : 92;
+                  clone.quality = fmt.quality ?? 92;
                   const buf = writeImage(clone, magickFormat);
                   folder.file(`${fileNamePrefix}${fmt.extension}`, buf);
                 }
@@ -186,7 +187,7 @@ self.onmessage = async (
               const magickFormat = MAGICK_FORMAT_MAP[fmt.id];
               if (!magickFormat) continue;
 
-              image.quality = fmt.id === "jpg" ? 90 : 92;
+              image.quality = fmt.quality ?? 92;
               const buf = writeImage(image, magickFormat);
               folder.file(`${baseName}${fmt.extension}`, buf);
             }

@@ -3,7 +3,7 @@ import FramingDialog, {
   type FrameResult,
   type FrameTask,
 } from "./components/FramingDialog.vue";
-import { computed, ref, toRaw, watch } from "vue";
+import { computed, onMounted, ref, toRaw } from "vue";
 import {
   RiAddLine,
   RiCheckDoubleLine,
@@ -14,6 +14,8 @@ import {
   RiFolderDownloadLine,
   RiImageLine,
   RiLoader4Line,
+  RiRefreshLine,
+  RiSaveLine,
   RiSettings3Line,
   RiUploadCloud2Line,
 } from "@remixicon/vue";
@@ -41,6 +43,12 @@ interface FormatSpec {
   folder: string;
 }
 
+interface RatioPreset {
+  id: string;
+  name: string;
+  ratios: Omit<AspectRatioSpec, "custom">[];
+}
+
 const DEFAULT_RATIOS: AspectRatioSpec[] = [
   { id: "1-1", label: "1-1", wRatio: 1, hRatio: 1 },
   { id: "3-4", label: "3-4", wRatio: 3, hRatio: 4 },
@@ -64,51 +72,27 @@ const AVAILABLE_FORMATS: FormatSpec[] = [
   { id: "ico", label: "ICO (.ico)", extension: ".ico", folder: "ICO" },
 ];
 
-const STORAGE_KEYS = {
-  CROP_ENABLED: "aspecta_crop_enabled",
-  RATIO_IDS: "aspecta_selected_ratio_ids",
-  FORMAT_IDS: "aspecta_selected_format_ids",
-  AVAILABLE_RATIOS: "aspecta_available_ratios",
-} as const;
+const QUALITY_CONTROLLED_FORMAT_IDS = ["jpg", "webp", "avif", "jxl"];
 
-const loadSavedSetting = <T>(key: string, fallback: T): T => {
-  try {
-    const item = localStorage.getItem(key);
-    return item !== null ? (JSON.parse(item) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-};
+const PRESETS_STORAGE_KEY = "aspecta:ratio-presets";
 
-const availableRatios = ref<AspectRatioSpec[]>(
-  loadSavedSetting(STORAGE_KEYS.AVAILABLE_RATIOS, [...DEFAULT_RATIOS]),
-);
-const selectedRatioIds = ref<string[]>(
-  loadSavedSetting(STORAGE_KEYS.RATIO_IDS, ["1-1", "3-4", "4-3", "2-3", "3-2"]),
-);
-const selectedFormatIds = ref<string[]>(
-  loadSavedSetting(STORAGE_KEYS.FORMAT_IDS, ["jpg", "png", "tiff"]),
-);
-const cropEnabled = ref<boolean>(
-  loadSavedSetting(STORAGE_KEYS.CROP_ENABLED, true),
-);
+const availableRatios = ref<AspectRatioSpec[]>([...DEFAULT_RATIOS]);
+const selectedRatioIds = ref<string[]>(["1-1", "3-4", "4-3", "2-3", "3-2"]);
+const selectedFormatIds = ref<string[]>(["jpg", "png", "tiff"]);
+const cropEnabled = ref(true);
 
-watch(
-  [cropEnabled, selectedRatioIds, selectedFormatIds, availableRatios],
-  ([newCrop, newRatios, newFormats, newAvailRatios]) => {
-    localStorage.setItem(STORAGE_KEYS.CROP_ENABLED, JSON.stringify(newCrop));
-    localStorage.setItem(STORAGE_KEYS.RATIO_IDS, JSON.stringify(newRatios));
-    localStorage.setItem(STORAGE_KEYS.FORMAT_IDS, JSON.stringify(newFormats));
-    localStorage.setItem(
-      STORAGE_KEYS.AVAILABLE_RATIOS,
-      JSON.stringify(newAvailRatios),
-    );
-  },
-  { deep: true },
-);
+const formatQuality = ref<Record<string, number>>({
+  jpg: 90,
+  webp: 90,
+  avif: 60,
+  jxl: 80,
+});
 
 const customWidth = ref<number | null>(null);
 const customHeight = ref<number | null>(null);
+
+const presets = ref<RatioPreset[]>([]);
+const newPresetName = ref("");
 
 const queue = ref<QueueItem[]>([]);
 const isProcessing = ref(false);
@@ -134,6 +118,12 @@ const selectedRatios = computed(() =>
 
 const selectedFormats = computed(() =>
   AVAILABLE_FORMATS.filter((f) => selectedFormatIds.value.includes(f.id))
+);
+
+const qualityControlledSelectedFormats = computed(() =>
+  selectedFormats.value.filter((f) =>
+    QUALITY_CONTROLLED_FORMAT_IDS.includes(f.id)
+  )
 );
 
 const totalOutputsPerImage = computed(() =>
@@ -208,6 +198,59 @@ const toggleFormat = (id: string) => {
     selectedFormatIds.value.push(id);
   }
 };
+
+const loadPresets = () => {
+  try {
+    const raw = localStorage.getItem(PRESETS_STORAGE_KEY);
+    if (raw) presets.value = JSON.parse(raw);
+  } catch {
+    presets.value = [];
+  }
+};
+
+const persistPresets = () => {
+  try {
+    localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets.value));
+  } catch {}
+};
+
+const saveCurrentAsPreset = () => {
+  const name = newPresetName.value.trim();
+  if (!name || !selectedRatios.value.length) return;
+
+  presets.value.push({
+    id: `preset-${Date.now()}`,
+    name,
+    ratios: selectedRatios.value.map(({ id, label, wRatio, hRatio }) => ({
+      id,
+      label,
+      wRatio,
+      hRatio,
+    })),
+  });
+
+  persistPresets();
+  newPresetName.value = "";
+};
+
+const applyPreset = (preset: RatioPreset) => {
+  if (isProcessing.value) return;
+
+  preset.ratios.forEach((ratio) => {
+    if (!availableRatios.value.some((r) => r.id === ratio.id)) {
+      availableRatios.value.push({ ...ratio, custom: true });
+    }
+  });
+
+  selectedRatioIds.value = preset.ratios.map((r) => r.id);
+};
+
+const deletePreset = (id: string) => {
+  presets.value = presets.value.filter((p) => p.id !== id);
+  persistPresets();
+};
+
+onMounted(loadPresets);
 
 const addFiles = (fileList: FileList | File[]) => {
   const newItems: QueueItem[] = Array.from(fileList)
@@ -364,6 +407,9 @@ const startProcessing = async () => {
       id,
       extension,
       folder,
+      quality: QUALITY_CONTROLLED_FORMAT_IDS.includes(id)
+        ? formatQuality.value[id]
+        : undefined,
     })),
     frames: JSON.parse(JSON.stringify(toRaw(finalFrameResults.value))),
     cropEnabled: cropEnabled.value,
@@ -575,6 +621,46 @@ const handleFramingCancel = () => {
             <span>Add Ratio</span>
           </button>
         </div>
+
+        <div class="presets-block">
+          <label class="group-label subtle-label">Presets</label>
+
+          <div v-if="presets.length" class="presets-row">
+            <span
+              v-for="preset in presets"
+              :key="preset.id"
+              class="chip preset-chip"
+              :class="{ disabled: isProcessing }"
+              @click="applyPreset(preset)"
+            >
+              {{ preset.name }}
+              <RiCloseLine
+                size="14px"
+                class="preset-delete"
+                @click.stop="deletePreset(preset.id)"
+              />
+            </span>
+          </div>
+
+          <div class="custom-ratio-form">
+            <input
+              v-model.trim="newPresetName"
+              type="text"
+              placeholder="Preset name"
+              :disabled="isProcessing || !cropEnabled"
+              @keyup.enter="saveCurrentAsPreset"
+            />
+            <button
+              type="button"
+              class="btn-secondary"
+              :disabled="isProcessing || !cropEnabled || !newPresetName.trim() || !selectedRatios.length"
+              @click="saveCurrentAsPreset"
+            >
+              <RiSaveLine size="16px" />
+              <span>Save Current as Preset</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="options-group">
@@ -591,6 +677,30 @@ const handleFramingCancel = () => {
           >
             {{ fmt.label }}
           </button>
+        </div>
+
+        <div
+          v-if="qualityControlledSelectedFormats.length"
+          class="quality-controls"
+        >
+          <div
+            v-for="fmt in qualityControlledSelectedFormats"
+            :key="fmt.id"
+            class="quality-row"
+          >
+            <label :for="`quality-${fmt.id}`">
+              <span>{{ fmt.label }} quality</span>
+              <span class="quality-value">{{ formatQuality[fmt.id] }}</span>
+            </label>
+            <input
+              :id="`quality-${fmt.id}`"
+              v-model.number="formatQuality[fmt.id]"
+              type="range"
+              min="1"
+              max="100"
+              :disabled="isProcessing"
+            />
+          </div>
         </div>
       </div>
     </section>

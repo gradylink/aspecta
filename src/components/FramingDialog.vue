@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   RiArrowRightLine,
   RiSkipForwardLine,
@@ -117,6 +117,62 @@ const handleImageLoad = () => {
   updateNaturalSize();
 };
 
+const NUDGE_STEP = 4;
+
+const nudge = (dx: number, dy: number) => {
+  if (cropAxis.value === "x" && dx !== 0) {
+    panX.value = clamp(panX.value + dx * NUDGE_STEP, 0, 100);
+  } else if (cropAxis.value === "y" && dy !== 0) {
+    panY.value = clamp(panY.value + dy * NUDGE_STEP, 0, 100);
+  }
+};
+
+const handleKeydown = (event: KeyboardEvent) => {
+  switch (event.key) {
+    case "ArrowLeft":
+      event.preventDefault();
+      nudge(-1, 0);
+      break;
+    case "ArrowRight":
+      event.preventDefault();
+      nudge(1, 0);
+      break;
+    case "ArrowUp":
+      event.preventDefault();
+      nudge(0, -1);
+      break;
+    case "ArrowDown":
+      event.preventDefault();
+      nudge(0, 1);
+      break;
+    case "Enter":
+    case " ":
+      event.preventDefault();
+      saveCurrentAndNext();
+      break;
+    case "Escape":
+      event.preventDefault();
+      handleCancel();
+      break;
+    case "s":
+    case "S":
+      if (hasMoreRatiosForImage.value) {
+        event.preventDefault();
+        skipRemainingInImage();
+      }
+      break;
+    case "r":
+    case "R":
+      if (
+        props.tasks.length > 1 && currentIndex.value < props.tasks.length - 1
+      ) {
+        event.preventDefault();
+        skipRemaining();
+      }
+      break;
+  }
+};
+
 const onPointerDown = (event: PointerEvent) => {
   if (cropAxis.value === "none" || !stageRef.value) return;
 
@@ -222,7 +278,14 @@ const reset = () => {
 watch(() => props.isOpen, (newVal) => {
   if (newVal) {
     reset();
+    window.addEventListener("keydown", handleKeydown);
+  } else {
+    window.removeEventListener("keydown", handleKeydown);
   }
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", handleKeydown);
 });
 
 watch(currentTask, async () => {
@@ -244,6 +307,7 @@ watch(currentTask, async () => {
       <div class="dialog-body" v-if="currentTask">
         <p class="helper-text">
           {{ cropAxis === 'none' ? 'Perfect fit, no cropping needed.' : 'Drag the frame to reposition the crop.' }}
+          <span class="shortcut-hint">&nbsp;&middot; &larr;&uarr;&rarr;&darr; nudge &middot; Enter next &middot; Esc cancel</span>
         </p>
 
         <div class="framing-container-wrapper">
@@ -361,6 +425,11 @@ watch(currentTask, async () => {
   flex-shrink: 0;
 }
 
+.shortcut-hint {
+  opacity: 0.6;
+  font-size: 0.82rem;
+}
+
 .framing-container-wrapper {
   width: 100%;
   flex: 1;
@@ -393,7 +462,6 @@ watch(currentTask, async () => {
   user-select: none;
   pointer-events: none;
 }
-
 .crop-rect {
   position: absolute;
   box-shadow: 0 0 0 2000px rgba(0, 0, 0, 0.6);
